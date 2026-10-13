@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,8 +20,10 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: Literal["development", "staging", "production", "test"] = "development"
     debug: bool = False
-    api_v1_prefix: str = "/api/v1"
-    cors_origins: list[str] = ["*"]
+    # Deliberately a string: pydantic-settings JSON-decodes complex types straight from
+    # the environment, which would reject plain values like ``*``. Read the parsed
+    # list from `cors_origin_list` instead.
+    cors_origins: str = "*"
 
     # Supabase REST API: Storage buckets + Auth (JWT verification).
     supabase_url: str = ""
@@ -36,20 +37,10 @@ class Settings(BaseSettings):
     db_max_overflow: int = 10
     db_echo: bool = False
 
-    # Registers a placeholder predictor so the endpoints work before a real model
-    # is wired in. Disable in production.
-    enable_demo_predictor: bool = True
-
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def _parse_cors_origins(cls, value: Any) -> Any:
-        """Accept ``a,b`` in addition to a JSON list, which is what ``.env`` gives us."""
-        if isinstance(value, str):
-            stripped = value.strip()
-            if stripped.startswith("["):
-                return value
-            return [item.strip() for item in stripped.split(",") if item.strip()]
-        return value
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Parsed CORS allow-list. ``*`` allows every origin."""
+        return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
 
     @property
     def supabase_api_key(self) -> str:

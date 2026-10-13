@@ -28,27 +28,6 @@ class NotConfiguredError(AppError):
     code = "not_configured"
 
 
-class ModelNotFoundError(AppError):
-    """No predictor is registered under the requested name."""
-
-    status_code = 404
-    code = "model_not_found"
-
-
-class ModelNotReadyError(AppError):
-    """The predictor exists but its artifacts are not available yet."""
-
-    status_code = 503
-    code = "model_not_ready"
-
-
-class InvalidModelInputError(AppError):
-    """The feature payload cannot be scored by the model."""
-
-    status_code = 422
-    code = "invalid_model_input"
-
-
 class SupabaseError(AppError):
     """A Supabase Storage or Auth call failed."""
 

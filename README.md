@@ -55,6 +55,24 @@ Fill in `.env` from your Supabase dashboard:
 `DATABASE_URL` can be pasted verbatim: the app rewrites `postgres://` to `postgresql+asyncpg://`
 and converts `sslmode`/`pgbouncer` parameters into the `connect_args` asyncpg expects.
 
+### Connecting on a network without IPv6
+
+`db.<project-ref>.supabase.co` resolves to an **IPv6-only** address. If your machine has no
+IPv6 route, the direct connection will fail with a DNS/connect error even though the
+credentials are correct. Use the IPv4-compatible Supavisor pooler instead:
+
+```
+postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
+```
+
+- `<region>` is the project's region (`ap-southeast-1`, `us-east-1`, …). Check it in
+  Project Settings → General.
+- Use port **5432** for a long-running server. Port **6543** is transaction mode, which
+  does not support prepared statements — the app detects it and disables asyncpg's
+  statement cache automatically.
+- `sslmode=require` encrypts but does not validate the certificate, which is what libpq
+  does and what Supavisor needs. Raise it to `verify-full` to enforce validation.
+
 Create the schema (or run the equivalent SQL in the Supabase SQL editor):
 
 ```powershell

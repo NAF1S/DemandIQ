@@ -1,1 +1,1 @@
-"""Integrations: Supabase (Storage/Auth) and the model registry."""
+"""Supabase integration: Storage and Auth."""

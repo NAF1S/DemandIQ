@@ -16,12 +16,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import health
-from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine
-from app.services.model_service import register_demo_predictor
 from app.services.supabase_client import close_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -31,16 +29,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
 
-    if settings.enable_demo_predictor:
-        register_demo_predictor()
-        logger.warning(
-            "The placeholder 'demo' predictor is registered. Wire in your own model and set "
-            "ENABLE_DEMO_PREDICTOR=false before deploying."
-        )
     if not settings.database_configured:
-        logger.warning("DATABASE_URL is not set - data endpoints will report 'not_configured'.")
+        logger.warning("DATABASE_URL is not set - the readiness probe will report 'not_configured'.")
     if not settings.supabase_configured:
-        logger.warning("Supabase credentials are not set - Storage and Auth endpoints are unavailable.")
+        logger.warning("SUPABASE_URL / SUPABASE_ANON_KEY are not set - the Supabase probe is unavailable.")
 
     try:
         yield
@@ -56,15 +48,16 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        description="FastAPI service that reads and writes Supabase data and serves ML predictions.",
+        description="FastAPI service connected to Supabase.",
         debug=settings.debug,
         lifespan=lifespan,
     )
 
-    allow_all_origins = settings.cors_origins == ["*"]
+    origins = settings.cors_origin_list
+    allow_all_origins = origins == ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
+        allow_origins=origins,
         allow_credentials=not allow_all_origins,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -72,7 +65,6 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(health.router)
-    app.include_router(api_router, prefix=settings.api_v1_prefix)
 
     @app.get("/", include_in_schema=False)
     async def root() -> dict[str, Any]:
@@ -81,7 +73,6 @@ def create_app() -> FastAPI:
             "version": settings.app_version,
             "environment": settings.environment,
             "docs": "/docs",
-            "api": settings.api_v1_prefix,
         }
 
     return app

@@ -1,1 +1,1 @@
-"""Database engine, session factory, models and repositories."""
+"""Database engine and session factory for Supabase Postgres."""

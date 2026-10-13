@@ -22,6 +22,24 @@ from app.core.exceptions import NotConfiguredError
 _ASYNC_DRIVER = "postgresql+asyncpg"
 
 
+def _ssl_context(sslmode: str) -> ssl_module.SSLContext:
+    """Translate a libpq ``sslmode`` into the asyncpg equivalent.
+
+    asyncpg's ``ssl=True`` means "encrypt *and* verify", but libpq's ``require`` only
+    means "encrypt". Supabase's pooler presents a chain that is not in the default trust
+    store, so mapping ``require`` to ``True`` would reject a perfectly valid server.
+    """
+    context = ssl_module.create_default_context()
+    if sslmode == "verify-full":
+        return context
+    if sslmode == "verify-ca":
+        context.check_hostname = False
+        return context
+    context.check_hostname = False
+    context.verify_mode = ssl_module.CERT_NONE
+    return context
+
+
 def normalize_database_url(raw_url: str) -> tuple[str, dict[str, Any]]:
     """Return an asyncpg-compatible URL plus the ``connect_args`` it implies."""
     url = raw_url.strip()
@@ -37,17 +55,17 @@ def normalize_database_url(raw_url: str) -> tuple[str, dict[str, Any]]:
     query = dict(parse_qsl(parts.query))
     connect_args: dict[str, Any] = {}
 
+    # asyncpg rejects `sslmode` and `pgbouncer` as connect() keywords, so pop them here.
     sslmode = query.pop("sslmode", None)
-    if sslmode in {"require", "prefer", "allow"}:
-        connect_args["ssl"] = True
-    elif sslmode in {"verify-ca", "verify-full"}:
-        connect_args["ssl"] = ssl_module.create_default_context()
+    if sslmode:
+        connect_args["ssl"] = _ssl_context(sslmode)
 
     pooled = query.pop("pgbouncer", None)
     if parts.port == 6543 or pooled in {"true", "1"}:
         # Supabase's transaction pooler does not support prepared statements.
         connect_args["statement_cache_size"] = 0
-        connect_args.setdefault("ssl", True)
+        # Supavisor always terminates TLS, so encrypt even without an explicit sslmode.
+        connect_args.setdefault("ssl", _ssl_context("require"))
 
     cleaned = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
     return cleaned, connect_args

@@ -1,0 +1,43 @@
+# Build context exclusions. Everything here is either unnecessary for the image,
+# platform-specific, or a secret that must never be baked into a layer.
+
+# --- VCS ---
+.git
+.gitignore
+.github
+
+# --- env files and secrets (config is injected at runtime) ---
+.env
+.env.*
+!.env.example
+
+# --- python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- docs ---
+*.md
+
+# --- local model artifacts ---
+models/
+*.joblib
+*.pkl
+*.onnx
+*.pt
+*.h5
+
+# --- container metadata (not needed inside the image) ---
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# --- scratch / host-side utilities ---
+scratch/
+scripts/
