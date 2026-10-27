@@ -106,6 +106,28 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
+## Phase 3 — historical traffic backfill
+
+Apply the DemandIQ-owned progress/miss tables once:
+
+```bash
+psql "$DATABASE_URL" -f migrations/002_ml_backfill_jobs.sql
+```
+
+Validate first, then import the three Jetpack exports:
+
+```bash
+python -m cli backfill-traffic --dir ../web-traffic-data --org 1 --store 1 --dry-run
+python -m cli backfill-traffic --dir ../web-traffic-data --org 1 --store 1
+```
+
+The import is idempotent (Postgres `ON CONFLICT`), records per-file progress in
+`ml_backfill_jobs`, logs unmatched product rows in `ml_traffic_mapping_misses`, and
+never inserts an unmapped product into `sp_traffic_daily`. Mapping is exact
+`Post_ID → woo_product_id`, with `sp_products.slug` (when that column exists) and
+normalised-title fallbacks. `jetpack` is authoritative through 2026-10-26;
+`plugin_realtime` covers later dates and is a cross-check.
+
 ## Run
 
 ```powershell
