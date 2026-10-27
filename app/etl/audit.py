@@ -112,6 +112,10 @@ async def _scalar(session: AsyncSession, sql: str, params: dict[str, Any] | None
 
 async def collect(org_id: int, start_date: date, traffic_dir: Path) -> dict[str, Any]:
     snapshot = datetime.now(timezone.utc)
+    # The StockPilot columns are timestamp-without-time-zone; asyncpg rejects an
+    # aware datetime for those parameters. Keep the report timestamp aware, but
+    # use a naive UTC value for SQL binds.
+    db_now = snapshot.replace(tzinfo=None)
     params = {"org_id": org_id}
 
     async with session_scope() as session:
@@ -321,7 +325,7 @@ async def collect(org_id: int, start_date: date, traffic_dir: Path) -> dict[str,
                   AND event_id NOT LIKE 'reprocess-%'
                   AND event_id NOT LIKE 'ghost-release-%'
                 """,
-                {**params, "since": snapshot - timedelta(days=1)},
+                {**params, "since": db_now - timedelta(days=1)},
             )
         )
         organic_7d = int(
@@ -334,7 +338,7 @@ async def collect(org_id: int, start_date: date, traffic_dir: Path) -> dict[str,
                   AND event_id NOT LIKE 'reprocess-%'
                   AND event_id NOT LIKE 'ghost-release-%'
                 """,
-                {**params, "since": snapshot - timedelta(days=7)},
+                {**params, "since": db_now - timedelta(days=7)},
             )
         )
         jobs = {}
@@ -497,6 +501,12 @@ async def collect(org_id: int, start_date: date, traffic_dir: Path) -> dict[str,
         warnings.append(
             "sp_demand_forecasts has no unique key on (organization_id, entity_type, entity_id, forecast_date); "
             "Phase 4 must add it before upserts."
+        )
+    missing_orders = (number_span - orders_count) if number_span else None
+    if missing_orders and missing_orders > 0:
+        warnings.append(
+            f"~{missing_orders} order numbers in the {min_number}–{max_number} range have no portal row; "
+            "trigger Force re-sync in the plugin to check (deleted orders may explain the gaps)."
         )
     if first_order_at and product_overlap.get("start") and product_overlap["start"] > str(first_order_at)[:10]:
         warnings.append("The usable product-traffic window starts after the first order.")
