@@ -79,6 +79,33 @@ Create the schema (or run the equivalent SQL in the Supabase SQL editor):
 python -m app.db.init_db
 ```
 
+## Phase 1 — data audit
+
+The read-only audit validates the live StockPilot Postgres database and the three
+Jetpack traffic exports in `stock_pilot/web-traffic-data/`. It never writes to the
+database.
+
+```bash
+pip install -r requirements.txt
+DATABASE_URL=postgresql://... python -m app.etl.audit --org 1 \
+  --traffic-dir ../web-traffic-data
+```
+
+It writes `reports/phase1-audit.json` and `reports/phase1-audit.md`, and prints a
+summary including the usable order/traffic overlap window.
+
+The canonical extractors live in `app/etl/extractors.py`; the parameterised SQL is
+in `app/etl/queries.py`. Consumption is based on `movement_type='confirm'`,
+`qty_delta < 0`, buckets by **event time** (`COALESCE(occurred_at, created_at)`),
+nets same-day returns, and skips `sp_movement_exclusions`.
+
+Tests (no database required):
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
 ## Run
 
 ```powershell

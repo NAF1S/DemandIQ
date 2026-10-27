@@ -20,6 +20,9 @@ env/
 .ruff_cache/
 .mypy_cache/
 
+# Generated audit reports
+reports/
+
 # Local model artifacts
 models/
 *.joblib
