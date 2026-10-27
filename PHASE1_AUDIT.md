@@ -1,6 +1,6 @@
 # DemandIQ — Phase 1 Data Audit
 
-**Snapshot:** 2026-10-27T17:50:35.864843+00:00  
+**Snapshot:** 2026-10-27T19:07:06.465501+00:00  
 **Organization:** 1  
 **Extraction start:** 2026-05-01
 
@@ -45,7 +45,7 @@
 
 ## Movements
 
-- **Total:** 7506 · **missing occurred_at:** 633
+- **Total:** 7506 · **missing occurred_at:** 0
 - **Created:** 2026-08-02 18:37:52 → 2026-10-27 17:11:35
 - **Occurred:** 2026-05-16 10:26:55 → 2026-10-27 17:11:35
 
@@ -81,7 +81,7 @@
 
 - **Latest plugin event:** #2866 `ord-aefe2f48a671e3b86d0a91fb876e3d55` cancelled · processed · occurred 2026-10-27 12:13:05
 - **Organic events (24h / 7d):** 19 / 260
-- **Received backlog:** 252 (107 reprocess artifacts, 145 old plugin events)
+- **Received backlog:** 252 (107 reprocess, 144 delete artifacts, 1 plugin events)
 - **Queue jobs / failed jobs:** 0 / 0
 - **Store `Hide Haven`:** last seen 2026-10-27 12:15:10 · last sync 2026-10-27 12:15:11 · plugin — · syncs 2551
 
@@ -152,9 +152,9 @@
 
 ## Findings
 
-- 633 movements have no occurred_at (pre-Phase 0B history); extractors fall back to created_at for those rows.
-- 145 old plugin events remain status=received (pre-queue-fix backlog); do not replay them blindly.
-- 107 manual reprocess events remain status=received; the engine ran, but runReprocess does not update the event status.
+- 144 historical portal delete artifacts remain status=received; webhooks:close-superseded proposes noop.
+- 107 manual reprocess artifacts remain status=received; webhooks:close-superseded proposes processed.
+- 1 plugin events remain status=received; webhooks:close-superseded proposes noop/review after checking for later events.
 - sp_demand_forecasts has no unique key on (organization_id, entity_type, entity_id, forecast_date); Phase 4 must add it before upserts.
 - ~411 order numbers in the 868–1915 range have no portal row; trigger Force re-sync in the plugin to check (deleted orders may explain the gaps).
 - 9 products have no product-page traffic rows.

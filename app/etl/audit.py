@@ -299,7 +299,10 @@ async def collect(org_id: int, start_date: date, traffic_dir: Path) -> dict[str,
             """
             SELECT count(*) AS total,
                    count(*) FILTER (WHERE event_id LIKE 'reprocess-%') AS reprocess,
-                   count(*) FILTER (WHERE event_id NOT LIKE 'reprocess-%') AS other
+                   count(*) FILTER (WHERE event_id LIKE 'delete-%') AS delete_artifact,
+                   count(*) FILTER (
+                       WHERE event_id NOT LIKE 'reprocess-%' AND event_id NOT LIKE 'delete-%'
+                   ) AS plugin
             FROM sp_webhook_events
             WHERE organization_id = :org_id AND status = 'received'
             """,
@@ -487,15 +490,20 @@ async def collect(org_id: int, start_date: date, traffic_dir: Path) -> dict[str,
             f"{int(movements_summary['missing_occurred_at'])} movements have no occurred_at (pre-Phase 0B history); "
             "extractors fall back to created_at for those rows."
         )
-    if received_summary.get("other"):
+    if received_summary.get("delete_artifact"):
         warnings.append(
-            f"{int(received_summary['other'])} old plugin events remain status=received (pre-queue-fix backlog); "
-            "do not replay them blindly."
+            f"{int(received_summary['delete_artifact'])} historical portal delete artifacts remain status=received; "
+            "webhooks:close-superseded proposes noop."
         )
     if received_summary.get("reprocess"):
         warnings.append(
-            f"{int(received_summary['reprocess'])} manual reprocess events remain status=received; the engine ran, "
-            "but runReprocess does not update the event status."
+            f"{int(received_summary['reprocess'])} manual reprocess artifacts remain status=received; "
+            "webhooks:close-superseded proposes processed."
+        )
+    if received_summary.get("plugin"):
+        warnings.append(
+            f"{int(received_summary['plugin'])} plugin events remain status=received; "
+            "webhooks:close-superseded proposes noop/review after checking for later events."
         )
     if not forecast_unique_key:
         warnings.append(
@@ -642,7 +650,10 @@ def _markdown(report: dict[str, Any]) -> str:
         )
     lines.append(f"- **Organic events (24h / 7d):** {webhooks['organic_last_24h']} / {webhooks['organic_last_7d']}")
     received = webhooks["received"]
-    lines.append(f"- **Received backlog:** {received.get('total')} ({received.get('reprocess')} reprocess artifacts, {received.get('other')} old plugin events)")
+    lines.append(
+        f"- **Received backlog:** {received.get('total')} ({received.get('reprocess')} reprocess, "
+        f"{received.get('delete_artifact')} delete artifacts, {received.get('plugin')} plugin events)"
+    )
     lines.append(f"- **Queue jobs / failed jobs:** {webhooks['jobs'].get('jobs')} / {webhooks['jobs'].get('failed_jobs')}")
     for store in report["stores"]:
         lines.append(
