@@ -128,6 +128,23 @@ never inserts an unmapped product into `sp_traffic_daily`. Mapping is exact
 normalised-title fallbacks. `jetpack` is authoritative through 2026-10-26;
 `plugin_realtime` covers later dates and is a cross-check.
 
+## Phase 4 — ML schema
+
+Apply the DemandIQ-owned ML tables once:
+
+```bash
+psql "$DATABASE_URL" -f migrations/001_create_ml_tables.sql
+```
+
+- `ml_daily_features` — the core store-scoped training table
+  (`organization_id, store_id, entity_type, entity_id, feature_date`).
+- `ml_model_registry`, `ml_prediction_log`, `ml_calendar_events`.
+- The portal migrations add `sp_products.slug`/`permalink`, the ML unique indexes,
+  and the multi-store order key `(organization_id, store_id, woocommerce_id)`.
+
+The ORM models live in `app/db/models.py`; they describe the live schema for the
+feature builder and training pipeline.
+
 ## Run
 
 ```powershell
