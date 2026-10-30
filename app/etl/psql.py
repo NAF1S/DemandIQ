@@ -35,7 +35,8 @@ def _run_php(script: Path, arguments: list[Any]) -> str:
         text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "portal PHP script failed")
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(detail or "portal PHP script failed")
     return result.stdout
 
 

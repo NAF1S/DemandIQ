@@ -1,10 +1,7 @@
 # Phase 5 — Daily Features
 
 Phase 5 adds the zero-filled daily feature matrix that Phase 6/7 will train on.
-The code is complete and covered by tests; the live population is currently
-blocked by the Supabase Supavisor pooler, which drops connections mid-query
-(`server closed the connection unexpectedly`) on `sp_item_movements` and
-`sp_traffic_daily`.
+It is implemented, tested, and now populated live in `ml_daily_features`.
 
 ## What was built
 
@@ -19,45 +16,46 @@ blocked by the Supabase Supavisor pooler, which drops connections mid-query
   and return quantities; items use movement confirmations/returns. Orders,
   stock snapshots, reservations, product traffic, site traffic and referrers
   are joined per entity, then written to `ml_daily_features`.
-- `app/etl/psql.py` — extraction/loading bridge. The portal PHP scripts
-  (`portal/scripts/phase5_extract.php` and `phase5_write.php`) perform the SQL
-  boundary; pandas performs the feature math.
-- `app/etl/extractors.py` — retained async extractors, including the batched
-  all-entity stock, reservation, order, return and traffic queries.
+- `app/etl/psql.py` — portal PHP bridge. Reads and writes go through the portal
+  PDO connection (`portal/scripts/phase5_extract.php` and
+  `phase5_write.php`); pandas performs the feature math.
 - `cli.py` — `python -m cli build-features --org 1 --store 1 --lookback-days 90`
   (`--dry-run`, `--json`, `--dsn`).
 
-## Signals
+## Live result
 
-The expected live shape is 45 active entities (10 items, 35 products, store 1)
-over 90 days = 4,050 daily rows. A dry-run reached that shape with 30 products
-having traffic and 22 of 45 entities having enough history for a model:
+Run from the EC2 host against the live Supabase database:
 
-- `prophet`: 9
-- `lightgbm`: 13
-- `velocity`: 23
+- 4,050 rows = 45 active entities (10 items, 35 products, store 1) × 90 days
+- Date range: 2026-08-02 to 2026-10-30
+- 30 products have traffic (1,880 traffic-days; 12,605 views)
+- 2,781 rows carry stock snapshots; the rest are products without ledger movements
+- 2,413 net units consumed, 2,880 orders and 2,828,566.30 revenue in the window
+- 1,125 weekend rows (Friday/Saturday)
+- 22 of 45 entities have enough history; recommendations: 9 prophet, 13 lightgbm,
+  23 velocity
 
-These counts come from the dry-run and have not been persisted.
+Largest-traffic sample: product 30 on 2026-08-04, 56 views, 3 orders, 2,397.00
+revenue, stock 20, source `{"jetpack": 56}`.
 
-## Tests
+## Why EC2
 
-`/tmp/demandiq-test-venv/bin/python -m pytest -q` → **32 passed**. The feature
-tests assert zero-filling, stock forward-fill, Friday/Saturday weekend flags,
-traffic/funnel/channel ratios, lags and empty-input safety. The quality tests
-assert the model thresholds.
+The local host's Supabase Supavisor pooler drops psql/asyncpg SSL sessions
+mid-query on the movement and traffic statements. The EC2 host's portal PHP
+connection is stable, so the extraction and load run there. `PORTAL_ROOT` must
+point at the deployed portal (`/var/www/stockpilot/portal` on EC2). The EC2 root
+disk is at 96% (279 MB free after cleaning apt/journal caches); keep an eye on it.
 
-## Live status
+## Notes
 
-`ml_daily_features` remains empty. The extraction works through the portal's
-PHP PDO connection (`select 1`, counts, simple filters), but the pooler closes
-the connection on the heavier movement/consumption and traffic statements, so
-the full 10-dataset read has not completed. Retry once Supabase is stable:
+- The portal writer encodes `traffic_sources` as a JSON string; Laravel's upsert
+  does not auto-encode arrays and previously raised "Array to string conversion".
+- `psql.py` now includes PHP stdout in errors so fatal errors are visible.
+- Products without ledger movements have `NULL` stock columns rather than a
+  fabricated zero.
+- Tests: `/opt/demandiq/.venv/bin/python -m pytest -q` → **32 passed**.
 
-```bash
-php portal/scripts/phase5_extract.php 1 1 2026-08-02 > /tmp/phase5_extract.json
-python -m cli build-features --org 1 --store 1 --lookback-days 90 --dry-run
-python -m cli build-features --org 1 --store 1 --lookback-days 90
-```
+## Phase 6
 
-`PORTAL_ROOT` defaults to `../../portal` relative to the DemandIQ repo and can
-be overridden for the EC2 layout.
+The training table is ready. The next step is model selection/architecture
+(Phase 6), then training and evaluation.
