@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 from app.core.config import get_settings
+from app.etl.pipeline import run_feature_pipeline
 from app.etl.traffic_backfill import backfill, summary_to_json
 
 
@@ -72,6 +73,41 @@ def _print_summary(summary: dict) -> None:
         print("No rows written. Re-run without --dry-run to apply.")
 
 
+def _print_feature_summary(summary: dict) -> None:
+    mode = "DRY RUN" if summary["dry_run"] else "WRITTEN"
+    print(f"Phase 5 daily features — {mode}")
+    print(
+        f"Org {summary['organization_id']} · store {summary['store_id']} · "
+        f"{summary['start_date']} → {summary['end_date']}"
+    )
+    print(
+        f"Entities: {summary['entities']} ({summary['items']} items, {summary['products']} products) · "
+        f"with product traffic: {summary['traffic_entities']}"
+    )
+    print(
+        f"Feature rows: {summary['feature_rows']} · written: {summary['rows_written']} · "
+        f"enough data: {summary['entities_with_enough_data']}/{summary['entities']}"
+    )
+    print(f"Model recommendations: {summary['model_recommendations']}")
+
+    sparse = sorted(
+        summary["quality"],
+        key=lambda report: (report["non_zero_days"], report["entity_type"], report["entity_id"]),
+    )[:10]
+
+    if sparse:
+        print("Sparsest entities:")
+        for report in sparse:
+            print(
+                f"  {report['entity_type']} #{report['entity_id']}: "
+                f"{report['non_zero_days']}/{report['total_days']} non-zero · "
+                f"gap {report['max_gap_days']}d · {report['recommended_model']}"
+            )
+
+    if summary["dry_run"]:
+        print("No rows written. Re-run without --dry-run to apply.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m cli", description="DemandIQ data pipeline CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -88,6 +124,14 @@ def main(argv: list[str] | None = None) -> int:
     backfill_parser.add_argument("--dry-run", action="store_true", help="validate and report without writing")
     backfill_parser.add_argument("--json", type=Path, default=None, help="write the full summary as JSON")
     backfill_parser.add_argument("--dsn", default=None, help="override DATABASE_URL for this run")
+
+    features_parser = sub.add_parser("build-features", help="Build zero-filled daily ML features")
+    features_parser.add_argument("--org", type=int, default=1, help="organization id (default: 1)")
+    features_parser.add_argument("--store", type=int, default=1, help="store connection id (default: 1)")
+    features_parser.add_argument("--lookback-days", type=int, default=90, help="number of days to build (default: 90)")
+    features_parser.add_argument("--dry-run", action="store_true", help="validate and report without writing")
+    features_parser.add_argument("--json", type=Path, default=None, help="write the full summary as JSON")
+    features_parser.add_argument("--dsn", default=None, help="override DATABASE_URL for this run")
 
     args = parser.parse_args(argv)
 
@@ -111,6 +155,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"JSON summary: {args.json}")
 
         _print_summary(summary)
+        return 0
+
+    if args.command == "build-features":
+        summary = run_feature_pipeline(
+            organization_id=args.org,
+            store_id=args.store,
+            lookback_days=args.lookback_days,
+            dry_run=args.dry_run,
+        )
+
+        if args.json:
+            args.json.parent.mkdir(parents=True, exist_ok=True)
+            args.json.write_text(summary_to_json(summary), encoding="utf-8")
+            print(f"JSON summary: {args.json}")
+
+        _print_feature_summary(summary)
         return 0
 
     return 1

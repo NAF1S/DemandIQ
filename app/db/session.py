@@ -61,8 +61,11 @@ def normalize_database_url(raw_url: str) -> tuple[str, dict[str, Any]]:
         connect_args["ssl"] = _ssl_context(sslmode)
 
     pooled = query.pop("pgbouncer", None)
-    if parts.port == 6543 or pooled in {"true", "1"}:
-        # Supabase's transaction pooler does not support prepared statements.
+    is_pooler = parts.port == 6543 or "pooler.supabase.com" in (parts.hostname or "")
+    if is_pooler or pooled in {"true", "1"}:
+        # Supabase's pooler (Supavisor) invalidates prepared statements between
+        # transactions with DISCARD ALL; keeping asyncpg's cache on makes every
+        # query re-prepare or fail, turning simple reads into minute-long calls.
         connect_args["statement_cache_size"] = 0
         # Supavisor always terminates TLS, so encrypt even without an explicit sslmode.
         connect_args.setdefault("ssl", _ssl_context("require"))
