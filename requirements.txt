@@ -9,3 +9,9 @@ httpx>=0.27
 
 pandas>=2.0
 numpy>=1.26
+
+# Phase 6 models
+prophet>=1.1.5
+scikit-learn>=1.5
+lightgbm>=4.5
+joblib>=1.4

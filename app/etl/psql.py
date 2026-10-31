@@ -26,6 +26,7 @@ PORTAL_ROOT = Path(
 )
 EXTRACT_SCRIPT = PORTAL_ROOT / "scripts" / "phase5_extract.php"
 WRITE_SCRIPT = PORTAL_ROOT / "scripts" / "phase5_write.php"
+LOAD_FEATURES_SCRIPT = PORTAL_ROOT / "scripts" / "phase6_load_features.php"
 
 
 def _run_php(script: Path, arguments: list[Any]) -> str:
@@ -85,6 +86,17 @@ def extract_all(organization_id: int, store_id: int, start_date: date) -> dict[s
         ).drop_duplicates(["product_id", "ds"], keep="first")
 
     return frames
+
+
+def load_features(organization_id: int, store_id: int) -> pd.DataFrame:
+    """Load the persisted daily feature matrix for model selection."""
+    payload = json.loads(
+        _run_php(LOAD_FEATURES_SCRIPT, [organization_id, store_id])
+    )
+    frame = pd.DataFrame(payload)
+    if not frame.empty and "feature_date" in frame.columns:
+        frame["feature_date"] = pd.to_datetime(frame["feature_date"])
+    return frame
 
 
 def write_features(rows: list[dict[str, Any]]) -> int:

@@ -13,9 +13,15 @@ import asyncio
 import os
 from pathlib import Path
 
+from collections import Counter
+
+import pandas as pd
+
 from app.core.config import get_settings
 from app.etl.pipeline import run_feature_pipeline
+from app.etl.psql import load_features
 from app.etl.traffic_backfill import backfill, summary_to_json
+from app.models.selection import create_model, select_model
 
 
 def _print_summary(summary: dict) -> None:
@@ -108,6 +114,36 @@ def _print_feature_summary(summary: dict) -> None:
         print("No rows written. Re-run without --dry-run to apply.")
 
 
+def _print_selection_summary(summary: dict) -> None:
+    print("Phase 6 model selection")
+    print(
+        f"Org {summary['organization_id']} · store {summary['store_id']} · "
+        f"entities {summary['entities']} · admitted traffic {summary['admitted_traffic']}"
+    )
+    print(f"Models: {summary['models']}")
+
+    if summary["choices"]:
+        print("Recommendations:")
+        for choice in summary["choices"][:15]:
+            print(
+                f"  {choice['entity_type']} #{choice['entity_id']}: {choice['model']} "
+                f"({choice['reason']})"
+            )
+
+    if summary["backtest"]:
+        print("Backtest sample:")
+        for row in summary["backtest"]:
+            if "error" in row:
+                print(f"  {row['entity_type']} #{row['entity_id']} {row['model']}: {row['error']}")
+            else:
+                metrics = row["metrics"]
+                print(
+                    f"  {row['entity_type']} #{row['entity_id']} {row['model']}: "
+                    f"MAE {metrics['mae']} · MAPE {metrics['mape']}% · "
+                    f"coverage {metrics['coverage_95']}"
+                )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m cli", description="DemandIQ data pipeline CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -132,6 +168,15 @@ def main(argv: list[str] | None = None) -> int:
     features_parser.add_argument("--dry-run", action="store_true", help="validate and report without writing")
     features_parser.add_argument("--json", type=Path, default=None, help="write the full summary as JSON")
     features_parser.add_argument("--dsn", default=None, help="override DATABASE_URL for this run")
+
+    select_parser = sub.add_parser("select-models", help="Select/backtest models on daily features")
+    select_parser.add_argument("--org", type=int, default=1, help="organization id (default: 1)")
+    select_parser.add_argument("--store", type=int, default=1, help="store connection id (default: 1)")
+    select_parser.add_argument("--limit", type=int, default=5, help="entities in the backtest sample")
+    select_parser.add_argument("--horizon", type=int, default=14, help="holdout horizon (default: 14)")
+    select_parser.add_argument("--backtest", action="store_true", help="backtest the top entities")
+    select_parser.add_argument("--json", type=Path, default=None, help="write the full summary as JSON")
+    select_parser.add_argument("--dsn", default=None, help="override DATABASE_URL for this run")
 
     args = parser.parse_args(argv)
 
@@ -171,6 +216,73 @@ def main(argv: list[str] | None = None) -> int:
             print(f"JSON summary: {args.json}")
 
         _print_feature_summary(summary)
+        return 0
+
+    if args.command == "select-models":
+        frame = load_features(args.org, args.store)
+        if frame.empty:
+            print("No daily features found. Run build-features first.")
+            return 1
+
+        choices = []
+        for (entity_type, entity_id), group in frame.groupby(["entity_type", "entity_id"], sort=True):
+            choice = select_model(group)
+            choices.append(
+                {
+                    "entity_type": entity_type,
+                    "entity_id": int(entity_id),
+                    **choice.as_dict(),
+                }
+            )
+
+        backtest = []
+        if args.backtest:
+            units = frame.assign(
+                _units=pd.to_numeric(frame["units_consumed"], errors="coerce").fillna(0)
+            )
+            sample = units.groupby(["entity_type", "entity_id"])["_units"].sum().nlargest(args.limit)
+            for entity_type, entity_id in sample.index:
+                group = frame[
+                    (frame["entity_type"] == entity_type) & (frame["entity_id"] == entity_id)
+                ]
+                for name in ("velocity", "prophet", "lightgbm"):
+                    try:
+                        model = create_model(name)
+                        metrics = model.backtest(group, horizon=args.horizon)
+                        backtest.append(
+                            {
+                                "entity_type": entity_type,
+                                "entity_id": int(entity_id),
+                                "model": model.version,
+                                "metrics": metrics.as_dict(),
+                            }
+                        )
+                    except Exception as exc:  # optional dependency or sparse entity
+                        backtest.append(
+                            {
+                                "entity_type": entity_type,
+                                "entity_id": int(entity_id),
+                                "model": name,
+                                "error": str(exc),
+                            }
+                        )
+
+        summary = {
+            "organization_id": args.org,
+            "store_id": args.store,
+            "entities": len(choices),
+            "models": dict(Counter(choice["model"] for choice in choices)),
+            "admitted_traffic": sum(1 for choice in choices if choice["signal"]["admitted"]),
+            "choices": choices,
+            "backtest": backtest,
+        }
+
+        if args.json:
+            args.json.parent.mkdir(parents=True, exist_ok=True)
+            args.json.write_text(summary_to_json(summary), encoding="utf-8")
+            print(f"JSON summary: {args.json}")
+
+        _print_selection_summary(summary)
         return 0
 
     return 1
