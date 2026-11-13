@@ -29,6 +29,8 @@ class ModelMetrics:
     rmse: float
     coverage_95: float
     bias: float
+    wape: float
+    pinball_loss: float
 
     def as_dict(self) -> dict[str, float]:
         return asdict(self)
@@ -118,10 +120,29 @@ class BaseForecaster(ABC):
         coverage = float(np.mean((actual >= lower) & (actual <= upper)))
         bias = float(np.mean(residual))
 
+        total_actual = float(np.sum(np.abs(actual)))
+        wape = float(np.sum(np.abs(residual)) / total_actual * 100) if total_actual > 0 else 0.0
+
+        def pinball(observed: np.ndarray, forecast: np.ndarray, quantile: float) -> float:
+            delta = observed - forecast
+            return float(np.mean(np.maximum(quantile * delta, (quantile - 1.0) * delta)))
+
+        pinball_loss = float(
+            np.mean(
+                [
+                    pinball(actual, predicted, 0.5),
+                    pinball(actual, lower, 0.025),
+                    pinball(actual, upper, 0.975),
+                ]
+            )
+        )
+
         return ModelMetrics(
             mae=round(mae, 4),
             mape=round(mape, 4),
             rmse=round(rmse, 4),
             coverage_95=round(coverage, 4),
             bias=round(bias, 4),
+            wape=round(wape, 4),
+            pinball_loss=round(pinball_loss, 4),
         )

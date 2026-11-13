@@ -139,8 +139,8 @@ def _print_selection_summary(summary: dict) -> None:
                 metrics = row["metrics"]
                 print(
                     f"  {row['entity_type']} #{row['entity_id']} {row['model']}: "
-                    f"MAE {metrics['mae']} · MAPE {metrics['mape']}% · "
-                    f"coverage {metrics['coverage_95']}"
+                    f"MAE {metrics['mae']} · WAPE {metrics['wape']}% · "
+                    f"pinball {metrics['pinball_loss']} · coverage {metrics['coverage_95']}"
                 )
 
 
@@ -174,6 +174,12 @@ def main(argv: list[str] | None = None) -> int:
     select_parser.add_argument("--store", type=int, default=1, help="store connection id (default: 1)")
     select_parser.add_argument("--limit", type=int, default=5, help="entities in the backtest sample")
     select_parser.add_argument("--horizon", type=int, default=14, help="holdout horizon (default: 14)")
+    select_parser.add_argument(
+        "--min-sales-days",
+        type=int,
+        default=30,
+        help="minimum non-zero sales days for the backtest sample (default: 30)",
+    )
     select_parser.add_argument("--backtest", action="store_true", help="backtest the top entities")
     select_parser.add_argument("--json", type=Path, default=None, help="write the full summary as JSON")
     select_parser.add_argument("--dsn", default=None, help="override DATABASE_URL for this run")
@@ -226,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
 
         choices = []
         for (entity_type, entity_id), group in frame.groupby(["entity_type", "entity_id"], sort=True):
-            choice = select_model(group)
+            choice = select_model(group, entity_type=str(entity_type))
             choices.append(
                 {
                     "entity_type": entity_type,
@@ -240,7 +246,12 @@ def main(argv: list[str] | None = None) -> int:
             units = frame.assign(
                 _units=pd.to_numeric(frame["units_consumed"], errors="coerce").fillna(0)
             )
-            sample = units.groupby(["entity_type", "entity_id"])["_units"].sum().nlargest(args.limit)
+            stats = units.groupby(["entity_type", "entity_id"]).agg(
+                units=("_units", "sum"),
+                sales_days=("_units", lambda values: int((values > 0).sum())),
+            )
+            eligible = stats[stats["sales_days"] >= args.min_sales_days]
+            sample = eligible["units"].nlargest(args.limit)
             for entity_type, entity_id in sample.index:
                 group = frame[
                     (frame["entity_type"] == entity_type) & (frame["entity_id"] == entity_id)
@@ -273,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             "entities": len(choices),
             "models": dict(Counter(choice["model"] for choice in choices)),
             "admitted_traffic": sum(1 for choice in choices if choice["signal"]["admitted"]),
+            "min_sales_days": args.min_sales_days,
             "choices": choices,
             "backtest": backtest,
         }

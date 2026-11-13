@@ -37,14 +37,16 @@ def select_model(
     features: pd.DataFrame,
     quality: dict[str, Any] | None = None,
     signal: TrafficSignal | None = None,
+    entity_type: str | None = None,
 ) -> ModelChoice:
     """Pick the cheapest model that the data can support.
 
     Rules (traffic-aware):
     - fewer than 5 sales days: funnel when traffic is dense, else velocity
-    - fewer than 14 days or moderate history: velocity
-    - 60+ days, 20+ sales days and admitted traffic: LightGBM
-    - 30+ days otherwise: Prophet
+    - fewer than 14 days: velocity
+    - 20+ sales days on an item series: Prophet, the Phase 8 walk-forward winner
+    - 20+ sales days otherwise: LightGBM, with traffic as an optional feature
+    - 14+ days otherwise: Prophet
     """
     frame = prepare_features(features)
     quality = quality or validate_features(frame, 0)
@@ -64,10 +66,16 @@ def select_model(
     elif total_days < 14:
         model = "velocity"
         reason = "fewer than 14 days of history"
-    elif total_days >= 60 and sales_days >= 20 and signal.admitted and traffic["traffic_rich"]:
+    elif sales_days >= 20 and entity_type == "item":
+        model = "prophet"
+        reason = (
+            "20+ sales days on an item series; the walk-forward evaluation "
+            "favours Prophet over LightGBM"
+        )
+    elif sales_days >= 20:
         model = "lightgbm"
-        reason = "rich sales and admitted lead-lag traffic support LightGBM"
-    elif total_days >= 30:
+        reason = "20+ sales days; LightGBM uses traffic as an optional feature"
+    elif total_days >= 14:
         model = "prophet"
         reason = "moderate history; weekly seasonality is the safer choice"
     else:

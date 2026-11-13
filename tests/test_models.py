@@ -97,6 +97,8 @@ def test_velocity_backtest_returns_metrics():
     assert metrics.mae >= 0
     assert metrics.rmse >= metrics.mae - 1e-9
     assert 0 <= metrics.coverage_95 <= 1
+    assert metrics.wape >= 0
+    assert metrics.pinball_loss >= 0
 
 
 def test_funnel_uses_traffic_and_conversion():
@@ -111,19 +113,35 @@ def test_funnel_uses_traffic_and_conversion():
     assert model.get_hyperparameters()["conversion"] > 0
 
 
-def test_selection_uses_lightgbm_for_rich_lead_traffic():
-    choice = select_model(make_frame(70, lead=1))
+def test_selection_uses_lightgbm_for_rich_product_traffic():
+    choice = select_model(make_frame(70, lead=1), entity_type="product")
 
     assert choice.model == "lightgbm"
     assert choice.version == "lgbm-traffic-v1"
     assert choice.signal["admitted"] is True
 
 
-def test_selection_falls_back_to_prophet_without_traffic_signal():
-    choice = select_model(make_frame(70, lead=0))
+def test_selection_uses_lightgbm_without_traffic_when_product_sales_are_rich():
+    choice = select_model(make_frame(70, traffic=False), entity_type="product")
+
+    assert choice.model == "lightgbm"
+    assert choice.signal["admitted"] is False
+
+
+def test_selection_uses_prophet_for_high_volume_item_series():
+    choice = select_model(make_frame(70, lead=1), entity_type="item")
 
     assert choice.model == "prophet"
-    assert choice.signal["admitted"] is False
+    assert choice.version == "prophet-v2"
+
+
+def test_selection_uses_prophet_for_moderate_history():
+    frame = make_frame(25, lead=0)
+    frame.loc[15:, "units_consumed"] = 0
+
+    choice = select_model(frame)
+
+    assert choice.model == "prophet"
 
 
 def test_selection_uses_funnel_for_sparse_sales_with_dense_traffic():
