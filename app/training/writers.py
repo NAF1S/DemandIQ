@@ -153,6 +153,103 @@ def retire_active_models(
         )
 
 
+UPSERT_DAILY_FEATURES_DIRECT = """
+INSERT INTO ml_daily_features (
+    organization_id, store_id, entity_type, entity_id, feature_date,
+    units_consumed, units_returned, units_reserved, order_count, revenue, avg_order_value,
+    stock_on_hand, stock_reserved, stock_available,
+    page_views, add_to_cart, cart_removals, sessions, unique_visitors, traffic_sources,
+    ad_spend, ad_impressions, ad_clicks,
+    is_weekend, is_holiday, holiday_name, days_to_next_holiday,
+    is_payday, is_festival_period, festival_name,
+    created_at, updated_at
+) VALUES (
+    %(organization_id)s, %(store_id)s, %(entity_type)s, %(entity_id)s, %(feature_date)s,
+    %(units_consumed)s, %(units_returned)s, %(units_reserved)s, %(order_count)s,
+    %(revenue)s, %(avg_order_value)s,
+    %(stock_on_hand)s, %(stock_reserved)s, %(stock_available)s,
+    %(page_views)s, %(add_to_cart)s, %(cart_removals)s, %(sessions)s,
+    %(unique_visitors)s, CAST(%(traffic_sources)s AS jsonb),
+    %(ad_spend)s, %(ad_impressions)s, %(ad_clicks)s,
+    %(is_weekend)s, %(is_holiday)s, %(holiday_name)s, %(days_to_next_holiday)s,
+    %(is_payday)s, %(is_festival_period)s, %(festival_name)s,
+    NOW(), NOW()
+)
+ON CONFLICT (organization_id, store_id, entity_type, entity_id, feature_date)
+DO UPDATE SET
+    units_consumed = EXCLUDED.units_consumed,
+    units_returned = EXCLUDED.units_returned,
+    units_reserved = EXCLUDED.units_reserved,
+    order_count = EXCLUDED.order_count,
+    revenue = EXCLUDED.revenue,
+    avg_order_value = EXCLUDED.avg_order_value,
+    stock_on_hand = EXCLUDED.stock_on_hand,
+    stock_reserved = EXCLUDED.stock_reserved,
+    stock_available = EXCLUDED.stock_available,
+    page_views = EXCLUDED.page_views,
+    add_to_cart = EXCLUDED.add_to_cart,
+    cart_removals = EXCLUDED.cart_removals,
+    sessions = EXCLUDED.sessions,
+    unique_visitors = EXCLUDED.unique_visitors,
+    traffic_sources = EXCLUDED.traffic_sources,
+    is_weekend = EXCLUDED.is_weekend,
+    is_holiday = EXCLUDED.is_holiday,
+    is_payday = EXCLUDED.is_payday,
+    is_festival_period = EXCLUDED.is_festival_period,
+    updated_at = NOW()
+"""
+
+
+def upsert_daily_features_direct(conn: Connection, rows: list[dict[str, Any]]) -> int:
+    """UPSERT feature rows over a direct psycopg connection (Modal path)."""
+    if not rows:
+        return 0
+
+    payload = []
+    for row in rows:
+        item = dict(row)
+        sources = item.get("traffic_sources")
+        item["traffic_sources"] = json.dumps(sources) if isinstance(sources, dict) else "{}"
+        payload.append(item)
+
+    with conn.cursor() as cur:
+        cur.executemany(UPSERT_DAILY_FEATURES_DIRECT, payload)
+
+    return len(payload)
+
+
+def prune_stale_forecasts(
+    conn: Connection,
+    organization_id: int,
+    entity_type: str,
+    entity_id: int,
+    before: date,
+) -> int:
+    """Delete forecast rows that predate the new horizon for one entity.
+
+    Forecasts are keyed by (entity, date, model_version), so a new run that
+    starts later than the previous one leaves the old past-dated rows in place.
+    Those rows are no longer forecasts, and leaving them makes the UI show
+    history it will never score. The prototype ``baseline-v1`` rows are
+    excluded because they predate this pipeline and are cleaned up separately.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM sp_demand_forecasts
+            WHERE organization_id = %s
+              AND entity_type = %s
+              AND entity_id = %s
+              AND forecast_date < %s
+              AND model_version NOT LIKE 'baseline-%%'
+            """,
+            (organization_id, entity_type, entity_id, before),
+        )
+        deleted = cur.rowcount
+
+    return int(deleted or 0)
+
+
 def upsert_registry(conn: Connection, row: dict[str, Any]) -> None:
     payload = dict(row)
     payload["hyperparameters"] = json.dumps(payload["hyperparameters"], default=str)

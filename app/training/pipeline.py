@@ -19,6 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.training import writers
+from app.monitoring.health import assert_horizon_is_forward, feature_span
 from app.training.risk import build_recommendation, build_risk, stock_for
 from app.training.trainer import forecast_rows, train_entity
 
@@ -117,9 +118,23 @@ def run_training(
         entities = list(features.groupby(["entity_type", "entity_id"], sort=True))
         total = len(entities)
 
+        first_date, last_date = feature_span(features)
+        if last_date is None:
+            raise RuntimeError("Feature rows carry no usable feature_date values.")
+
+        try:
+            assert_horizon_is_forward(last_date)
+        except RuntimeError as exc:
+            if compute_run_id is not None:
+                writers.update_compute_run(
+                    conn, compute_run_id, status="failed", error=str(exc), run_key=run_id
+                )
+                conn.commit()
+            raise
+
         print(
             f"run {run_id}: {len(features)} feature rows · {total} entities · "
-            f"org {organization_id} store {store_id}",
+            f"org {organization_id} store {store_id} · features {first_date} → {last_date}",
             flush=True,
         )
 
@@ -204,6 +219,14 @@ def run_training(
 
             try:
                 forecast_count += writers.upsert_forecasts(conn, rows)
+                if rows:
+                    writers.prune_stale_forecasts(
+                        conn,
+                        organization_id,
+                        entity_type,
+                        entity_id,
+                        rows[0]["forecast_date"],
+                    )
                 writers.upsert_risk(conn, risk)
                 writers.replace_pending_recommendation(
                     conn,

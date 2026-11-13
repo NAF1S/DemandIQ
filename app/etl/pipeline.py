@@ -87,19 +87,18 @@ def _feature_rows(
     return rows
 
 
-def run_feature_pipeline(
-    organization_id: int = 1,
-    store_id: int = 1,
-    lookback_days: int = 90,
-    dry_run: bool = False,
+def build_feature_rows(
+    data: dict[str, pd.DataFrame],
+    organization_id: int,
+    store_id: int,
+    start_date: date,
+    end_date: date,
 ) -> dict[str, Any]:
-    """Build zero-filled daily features for every active item/product."""
-    lookback_days = max(1, int(lookback_days))
-    end_date = date.today()
-    start_date = end_date - timedelta(days=lookback_days - 1)
+    """Turn extracted frames into feature rows; no database access.
 
-    data = extract_all(organization_id, store_id, start_date)
-
+    Shared by the PHP-bridge path used on EC2 and the direct psycopg path used
+    inside Modal, so both produce byte-identical rows.
+    """
     entities = data["entities"]
     consumption_all = data["consumption"]
     traffic_all = data["traffic"]
@@ -198,7 +197,6 @@ def run_feature_pipeline(
 
         rows.extend(_feature_rows(features, organization_id, store_id, entity_type, entity_id))
 
-    rows_written = 0 if dry_run else write_features(rows)
     recommendations = Counter(report["recommended_model"] for report in quality_reports)
 
     return {
@@ -206,17 +204,67 @@ def run_feature_pipeline(
         "store_id": store_id,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
-        "dry_run": dry_run,
         "entities": len(entities),
         "items": sum(1 for value in entities["entity_type"] if value == "item"),
         "products": sum(1 for value in entities["entity_type"] if value == "product"),
         "traffic_entities": traffic_entities,
         "feature_rows": len(rows),
-        "rows_written": rows_written,
         "entities_with_enough_data": sum(1 for report in quality_reports if report["has_enough_data"]),
         "model_recommendations": dict(recommendations),
         "quality": sorted(
             quality_reports,
             key=lambda report: (report["entity_type"], report["entity_id"]),
         ),
+        "rows": rows,
     }
+
+
+def run_feature_pipeline(
+    organization_id: int = 1,
+    store_id: int = 1,
+    lookback_days: int = 90,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Build zero-filled daily features through the portal PHP bridge."""
+    lookback_days = max(1, int(lookback_days))
+    end_date = date.today()
+    start_date = end_date - timedelta(days=lookback_days - 1)
+
+    data = extract_all(organization_id, store_id, start_date)
+    summary = build_feature_rows(data, organization_id, store_id, start_date, end_date)
+    rows = summary.pop("rows")
+
+    rows_written = 0 if dry_run else write_features(rows)
+    summary.update(dry_run=dry_run, rows_written=rows_written, feature_rows=len(rows))
+
+    return summary
+
+
+def run_direct_feature_pipeline(
+    conn,
+    organization_id: int = 1,
+    store_id: int = 1,
+    lookback_days: int = 90,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Build features through a direct psycopg connection (Modal path)."""
+    from app.etl.direct import extract_all as extract_direct
+
+    lookback_days = max(1, int(lookback_days))
+    end_date = date.today()
+    start_date = end_date - timedelta(days=lookback_days - 1)
+
+    data = extract_direct(conn, organization_id, store_id, start_date)
+    summary = build_feature_rows(data, organization_id, store_id, start_date, end_date)
+    rows = summary.pop("rows")
+
+    rows_written = 0
+    if not dry_run:
+        from app.training.writers import upsert_daily_features_direct
+
+        rows_written = upsert_daily_features_direct(conn, rows)
+        conn.commit()
+
+    summary.update(dry_run=dry_run, rows_written=rows_written, feature_rows=len(rows))
+
+    return summary

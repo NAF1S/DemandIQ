@@ -184,6 +184,17 @@ def main(argv: list[str] | None = None) -> int:
     select_parser.add_argument("--json", type=Path, default=None, help="write the full summary as JSON")
     select_parser.add_argument("--dsn", default=None, help="override DATABASE_URL for this run")
 
+    health_parser = sub.add_parser("health", help="Report feature/forecast freshness")
+    health_parser.add_argument("--org", type=int, default=1, help="organization id (default: 1)")
+    health_parser.add_argument("--store", type=int, default=1, help="store connection id (default: 1)")
+    health_parser.add_argument(
+        "--max-stale-hours",
+        type=int,
+        default=36,
+        help="forecast/risk age in hours before the pipeline is stale (default: 36)",
+    )
+    health_parser.add_argument("--json", type=Path, default=None, help="write the report as JSON")
+
     args = parser.parse_args(argv)
 
     if args.dsn:
@@ -296,6 +307,41 @@ def main(argv: list[str] | None = None) -> int:
 
         _print_selection_summary(summary)
         return 0
+
+    if args.command == "health":
+        from app.monitoring.health import pipeline_health
+        from app.training.pipeline import connect
+
+        with connect() as conn:
+            report = pipeline_health(
+                conn,
+                organization_id=args.org,
+                store_id=args.store,
+                max_stale_hours=args.max_stale_hours,
+            )
+
+        if args.json:
+            args.json.parent.mkdir(parents=True, exist_ok=True)
+            args.json.write_text(summary_to_json(report), encoding="utf-8")
+            print(f"JSON report: {args.json}")
+
+        print(f"DemandIQ pipeline — {report['status'].upper()}")
+        print(
+            f"Features: {report['feature_rows']} rows · last {report['last_feature_date']} "
+            f"({report['feature_lag_days']}d ago)"
+        )
+        print(
+            f"Forecasts: {report['forecast_rows']} rows · "
+            f"{report['forecast_age_hours']}h old · "
+            f"{report['past_forecast_rows']} already in the past"
+        )
+        print(
+            f"Risks: {report['risk_rows']} rows · {report['risk_age_hours']}h old"
+        )
+        for problem in report["problems"]:
+            print(f"  PROBLEM: {problem}")
+
+        return 0 if report["status"] == "ok" else 2
 
     return 1
 

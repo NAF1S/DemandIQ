@@ -107,6 +107,150 @@ def trigger(payload: dict[str, Any]) -> dict[str, Any]:
     image=image,
     secrets=secrets,
     volumes={"/models": models_volume},
+    timeout=1800,
+    memory=4096,
+)
+def build_features(
+    organization_id: int = 1,
+    store_id: int = 1,
+    lookback_days: int = 90,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Refresh the daily feature matrix through a direct Postgres connection."""
+    from app.etl.pipeline import run_direct_feature_pipeline
+    from app.training.pipeline import connect
+
+    with connect() as conn:
+        summary = run_direct_feature_pipeline(
+            conn,
+            organization_id=organization_id,
+            store_id=store_id,
+            lookback_days=lookback_days,
+            dry_run=dry_run,
+        )
+
+    print(
+        f"features {summary['start_date']} → {summary['end_date']}: "
+        f"{summary['feature_rows']} rows for {summary['entities']} entities, "
+        f"{summary['rows_written']} written",
+        flush=True,
+    )
+
+    summary.pop("quality", None)
+    return summary
+
+
+@app.function(
+    image=image,
+    secrets=secrets,
+    volumes={"/models": models_volume},
+    timeout=900,
+    memory=1024,
+)
+def features_and_training(
+    organization_id: int = 1,
+    store_id: int = 1,
+    periods: int = 14,
+    engine: str = "auto",
+    lookback_days: int = 90,
+) -> dict[str, Any]:
+    """Build features, then train, so the forecast horizon always starts today."""
+    features = build_features.remote(
+        organization_id=organization_id,
+        store_id=store_id,
+        lookback_days=lookback_days,
+    )
+
+    summary = train.remote(
+        organization_id=organization_id,
+        store_id=store_id,
+        periods=periods,
+        engine=engine,
+        trigger_source="manual",
+    )
+
+    return {
+        "features": {
+            "rows_written": features["rows_written"],
+            "end_date": features["end_date"],
+            "entities": features["entities"],
+        },
+        "run": {
+            "run_id": summary["run_id"],
+            "trained": summary["trained"],
+            "models": summary["models"],
+        },
+    }
+
+
+@app.function(
+    image=image,
+    secrets=secrets,
+    volumes={"/models": models_volume},
+    timeout=300,
+    memory=1024,
+)
+def health(organization_id: int = 1, store_id: int = 1, max_stale_hours: int = 36) -> dict[str, Any]:
+    """Report pipeline freshness; raises when the pipeline is stale."""
+    from app.monitoring.health import pipeline_health
+    from app.training.pipeline import connect
+
+    with connect() as conn:
+        report = pipeline_health(
+            conn,
+            organization_id=organization_id,
+            store_id=store_id,
+            max_stale_hours=max_stale_hours,
+        )
+
+    print(
+        f"pipeline {report['status']}: features {report['last_feature_date']} "
+        f"({report['feature_lag_days']}d), forecasts {report['forecast_age_hours']}h old, "
+        f"risks {report['risk_age_hours']}h old; problems={report['problems']}",
+        flush=True,
+    )
+
+    if report["status"] != "ok":
+        raise RuntimeError(f"DemandIQ pipeline is stale: {', '.join(report['problems'])}")
+
+    return report
+
+
+@app.function(
+    image=image,
+    secrets=secrets,
+    volumes={"/models": models_volume},
+    schedule=modal.Cron("0 1 * * *"),
+    timeout=1800,
+    memory=4096,
+)
+def daily_features() -> dict[str, Any]:
+    """Daily 01:00 UTC feature build, one hour before training."""
+    from app.etl.pipeline import run_direct_feature_pipeline
+    from app.training.pipeline import connect
+
+    with connect() as conn:
+        summary = run_direct_feature_pipeline(conn, organization_id=1, store_id=1, lookback_days=90)
+
+    print(
+        f"daily features {summary['start_date']} → {summary['end_date']}: "
+        f"{summary['rows_written']} rows written",
+        flush=True,
+    )
+
+    return {
+        "start_date": summary["start_date"],
+        "end_date": summary["end_date"],
+        "entities": summary["entities"],
+        "feature_rows": summary["feature_rows"],
+        "rows_written": summary["rows_written"],
+    }
+
+
+@app.function(
+    image=image,
+    secrets=secrets,
+    volumes={"/models": models_volume},
     schedule=modal.Cron("0 2 * * *"),
     timeout=1800,
     memory=4096,
