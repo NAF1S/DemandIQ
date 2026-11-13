@@ -75,12 +75,12 @@ def _feature_rows(
                 "ad_impressions": None,
                 "ad_clicks": None,
                 "is_weekend": bool(row.get("is_weekend", False)),
-                "is_holiday": False,
-                "holiday_name": None,
+                "is_holiday": bool(row.get("is_holiday", False)),
+                "holiday_name": row.get("holiday_name") if not pd.isna(row.get("holiday_name")) else None,
                 "days_to_next_holiday": None,
-                "is_payday": False,
-                "is_festival_period": False,
-                "festival_name": None,
+                "is_payday": bool(row.get("is_payday", False)),
+                "is_festival_period": bool(row.get("is_festival_period", False)),
+                "festival_name": row.get("festival_name") if not pd.isna(row.get("festival_name")) else None,
             }
         )
 
@@ -93,6 +93,7 @@ def build_feature_rows(
     store_id: int,
     start_date: date,
     end_date: date,
+    calendar_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Turn extracted frames into feature rows; no database access.
 
@@ -187,6 +188,7 @@ def build_feature_rows(
             start_date=start_date,
             end_date=end_date,
             reserved_df=entity_reserved[["ds", "reserved"]].copy(),
+            calendar_df=calendar_df,
         )
 
         quality = validate_features(features, entity_id, entity_type)
@@ -222,7 +224,7 @@ def build_feature_rows(
 def run_feature_pipeline(
     organization_id: int = 1,
     store_id: int = 1,
-    lookback_days: int = 90,
+    lookback_days: int = 365,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Build zero-filled daily features through the portal PHP bridge."""
@@ -231,11 +233,26 @@ def run_feature_pipeline(
     start_date = end_date - timedelta(days=lookback_days - 1)
 
     data = extract_all(organization_id, store_id, start_date)
-    summary = build_feature_rows(data, organization_id, store_id, start_date, end_date)
+
+    from app.etl.calendar import calendar_frame, event_summary
+
+    events = data.get("events", pd.DataFrame())
+    if not events.empty and "event_date" in events.columns:
+        events["event_date"] = pd.to_datetime(events["event_date"])
+    calendar_df = calendar_frame(events, start_date, end_date)
+
+    summary = build_feature_rows(
+        data, organization_id, store_id, start_date, end_date, calendar_df=calendar_df
+    )
     rows = summary.pop("rows")
 
     rows_written = 0 if dry_run else write_features(rows)
-    summary.update(dry_run=dry_run, rows_written=rows_written, feature_rows=len(rows))
+    summary.update(
+        dry_run=dry_run,
+        rows_written=rows_written,
+        feature_rows=len(rows),
+        calendar=event_summary(events),
+    )
 
     return summary
 
@@ -244,10 +261,11 @@ def run_direct_feature_pipeline(
     conn,
     organization_id: int = 1,
     store_id: int = 1,
-    lookback_days: int = 90,
+    lookback_days: int = 365,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Build features through a direct psycopg connection (Modal path)."""
+    from app.etl.calendar import calendar_frame, event_summary, load_calendar_events
     from app.etl.direct import extract_all as extract_direct
 
     lookback_days = max(1, int(lookback_days))
@@ -255,7 +273,12 @@ def run_direct_feature_pipeline(
     start_date = end_date - timedelta(days=lookback_days - 1)
 
     data = extract_direct(conn, organization_id, store_id, start_date)
-    summary = build_feature_rows(data, organization_id, store_id, start_date, end_date)
+    events = load_calendar_events(conn, organization_id, start_date, end_date)
+    calendar_df = calendar_frame(events, start_date, end_date)
+
+    summary = build_feature_rows(
+        data, organization_id, store_id, start_date, end_date, calendar_df=calendar_df
+    )
     rows = summary.pop("rows")
 
     rows_written = 0
@@ -265,6 +288,11 @@ def run_direct_feature_pipeline(
         rows_written = upsert_daily_features_direct(conn, rows)
         conn.commit()
 
-    summary.update(dry_run=dry_run, rows_written=rows_written, feature_rows=len(rows))
+    summary.update(
+        dry_run=dry_run,
+        rows_written=rows_written,
+        feature_rows=len(rows),
+        calendar=event_summary(events),
+    )
 
     return summary

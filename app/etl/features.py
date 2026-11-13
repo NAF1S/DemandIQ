@@ -38,6 +38,7 @@ def build_daily_features(
     start_date: date,
     end_date: date,
     reserved_df: pd.DataFrame | None = None,
+    calendar_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build a complete, zero-filled daily feature matrix."""
     base = pd.DataFrame({"ds": pd.date_range(start_date, end_date, freq="D")})
@@ -96,12 +97,53 @@ def build_daily_features(
     df["is_weekend"] = df["day_of_week"].isin([4, 5])  # Friday + Saturday in Bangladesh
     df["month"] = df["ds"].dt.month
     df["day_of_month"] = df["ds"].dt.day
-    df["is_holiday"] = False
-    df["holiday_name"] = None
-    df["days_to_next_holiday"] = None
-    df["is_payday"] = False
-    df["is_festival_period"] = False
-    df["festival_name"] = None
+
+    # Quarter features: the store is planned quarter by quarter, and quarter
+    # position separates end-of-quarter pushes from the quiet middle.
+    df["quarter"] = df["ds"].dt.quarter
+    df["day_of_quarter"] = df["ds"].dt.day_of_year - (df["ds"].dt.quarter - 1) * 91
+    df["days_to_quarter_end"] = (
+        df["ds"].dt.to_period("Q").dt.end_time.dt.normalize() - df["ds"]
+    ).dt.days
+    df["quarter_progress"] = (df["day_of_quarter"] / 91).clip(0, 1)
+
+    # Calendar events. An empty event table yields the neutral values the
+    # models have always seen, so this is safe before any events are entered.
+    if calendar_df is not None and not calendar_df.empty:
+        events = calendar_df.copy()
+        events["ds"] = pd.to_datetime(events["ds"])
+        df = df.merge(events, on="ds", how="left", suffixes=("", "_event"))
+
+        for column in ("is_holiday", "is_payday", "is_festival_period", "is_sale_event"):
+            if column in df.columns:
+                df[column] = df[column].fillna(False).astype(bool)
+            else:
+                df[column] = False
+
+        for column, default in (
+            ("event_impact", 1.0),
+            ("days_to_event", 90),
+            ("days_since_event", 90),
+        ):
+            if column in df.columns:
+                df[column] = pd.to_numeric(df[column], errors="coerce").fillna(default)
+            else:
+                df[column] = default
+
+        for column in ("holiday_name", "festival_name"):
+            if column not in df.columns:
+                df[column] = None
+    else:
+        df["is_holiday"] = False
+        df["holiday_name"] = None
+        df["days_to_next_holiday"] = None
+        df["is_payday"] = False
+        df["is_festival_period"] = False
+        df["festival_name"] = None
+        df["is_sale_event"] = False
+        df["event_impact"] = 1.0
+        df["days_to_event"] = 90
+        df["days_since_event"] = 90
 
     for lag in (1, 7, 14, 28):
         df[f"lag_{lag}"] = df["net_consumed"].shift(lag)

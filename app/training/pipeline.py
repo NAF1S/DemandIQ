@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ import pandas as pd
 import psycopg
 from psycopg.rows import dict_row
 
+from app.etl.calendar import calendar_frame
 from app.training import writers
 from app.monitoring.health import assert_horizon_is_forward, feature_span
 from app.training.risk import build_recommendation, build_risk, stock_for
@@ -61,6 +62,13 @@ def load_features(conn: psycopg.Connection, organization_id: int, store_id: int)
         rows = cur.fetchall()
 
     return pd.DataFrame(rows)
+
+
+def load_calendar(conn: psycopg.Connection, organization_id: int, start_date, end_date):
+    """Load events for the horizon so models can use known future dates."""
+    from app.etl.calendar import load_calendar_events
+
+    return load_calendar_events(conn, organization_id, start_date, end_date)
 
 
 def load_stock(conn: psycopg.Connection, organization_id: int) -> dict[tuple[str, int], float]:
@@ -117,10 +125,21 @@ def run_training(
         stock = load_stock(conn, organization_id)
         entities = list(features.groupby(["entity_type", "entity_id"], sort=True))
         total = len(entities)
-
         first_date, last_date = feature_span(features)
         if last_date is None:
             raise RuntimeError("Feature rows carry no usable feature_date values.")
+
+        horizon_end = last_date + timedelta(days=periods)
+        future_events = load_calendar(conn, organization_id, last_date, horizon_end)
+        future_calendar = (
+            calendar_frame(future_events, last_date + timedelta(days=1), horizon_end)
+            if not future_events.empty
+            else None
+        )
+        print(
+            f"calendar: {len(future_events)} event row(s) in the {periods}-day horizon",
+            flush=True,
+        )
 
         try:
             assert_horizon_is_forward(last_date)
@@ -177,6 +196,7 @@ def run_training(
                     artifact_dir=artifact_root,
                     run_id=run_id,
                     organization_id=organization_id,
+                    future_calendar=future_calendar,
                 )
             except Exception as exc:
                 failures.append(
@@ -226,6 +246,7 @@ def run_training(
                         entity_type,
                         entity_id,
                         rows[0]["forecast_date"],
+                        result.version,
                     )
                 writers.upsert_risk(conn, risk)
                 writers.replace_pending_recommendation(

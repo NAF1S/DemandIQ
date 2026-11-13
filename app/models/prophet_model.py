@@ -39,6 +39,47 @@ class ProphetForecaster(BaseForecaster):
         self._active_regressors: list[str] = []
         self._last_regressors: dict[str, float] = {}
         self._last_date: date | None = None
+        self._event_holidays: pd.DataFrame | None = None
+
+    def set_future_calendar(self, frame: pd.DataFrame | None) -> None:
+        """Translate known events into Prophet holiday regressors.
+
+        Prophet needs the event calendar at fit time, not predict time, so this
+        hook is called before ``fit``. Only days actually flagged as an event
+        become holidays; an empty frame leaves Prophet unchanged.
+        """
+        if frame is None or frame.empty or "ds" not in frame.columns:
+            self._event_holidays = None
+            return
+
+        holidays = frame.copy()
+        holidays["ds"] = pd.to_datetime(holidays["ds"])
+
+        mask = pd.Series(False, index=holidays.index)
+        for column in ("is_holiday", "is_festival_period", "is_sale_event", "is_payday"):
+            if column in holidays.columns:
+                mask |= holidays[column].fillna(False).astype(bool)
+
+        holidays = holidays[mask]
+        if holidays.empty:
+            self._event_holidays = None
+            return
+
+        if "holiday_name" in holidays.columns:
+            names = holidays["holiday_name"]
+        elif "festival_name" in holidays.columns:
+            names = holidays["festival_name"]
+        else:
+            names = pd.Series("event", index=holidays.index)
+
+        self._event_holidays = pd.DataFrame(
+            {
+                "ds": holidays["ds"].dt.normalize(),
+                "holiday": names.fillna("event").astype(str),
+                "lower_window": -1,
+                "upper_window": 1,
+            }
+        ).drop_duplicates(subset=["ds", "holiday"])
 
     def _fit(self, frame: pd.DataFrame) -> None:
         if not PROPHET_AVAILABLE:
@@ -61,7 +102,7 @@ class ProphetForecaster(BaseForecaster):
             yearly_seasonality=len(frame) >= 365,
             daily_seasonality=False,
             interval_width=self.interval_width,
-            holidays=self.holidays,
+            holidays=self.holidays if self.holidays is not None else self._event_holidays,
         )
         for name in self._active_regressors:
             model.add_regressor(name)

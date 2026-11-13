@@ -224,14 +224,17 @@ def prune_stale_forecasts(
     entity_type: str,
     entity_id: int,
     before: date,
+    keep_version: str,
 ) -> int:
-    """Delete forecast rows that predate the new horizon for one entity.
+    """Delete forecast rows that are no longer the live series for one entity.
 
-    Forecasts are keyed by (entity, date, model_version), so a new run that
-    starts later than the previous one leaves the old past-dated rows in place.
-    Those rows are no longer forecasts, and leaving them makes the UI show
-    history it will never score. The prototype ``baseline-v1`` rows are
-    excluded because they predate this pipeline and are cleaned up separately.
+    Two kinds of row go stale. Ones dated before the new horizon were written
+    by an earlier run and are now history. Ones carrying a different model
+    version are superseded because the selection changed — for example when a
+    year of history promoted a product from Prophet to LightGBM. Both are
+    removed so each entity has exactly one live series; ``ml_prediction_log``
+    remains the audit trail. The prototype ``baseline-v1`` rows are excluded
+    because they predate this pipeline and are cleaned up separately.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -240,10 +243,10 @@ def prune_stale_forecasts(
             WHERE organization_id = %s
               AND entity_type = %s
               AND entity_id = %s
-              AND forecast_date < %s
               AND model_version NOT LIKE 'baseline-%%'
+              AND (forecast_date < %s OR model_version <> %s)
             """,
-            (organization_id, entity_type, entity_id, before),
+            (organization_id, entity_type, entity_id, before, keep_version),
         )
         deleted = cur.rowcount
 

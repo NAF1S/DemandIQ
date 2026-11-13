@@ -1,0 +1,28 @@
+event_date,event_type,event_name,impact_factor
+2026-02-21,holiday,International Mother Language Day,1.0
+2026-03-17,holiday,Shab-e-Qadr,1.1
+2026-03-20,eid,Eid-ul-Fitr,2.0
+2026-03-21,eid,Eid-ul-Fitr Holiday,1.8
+2026-03-22,eid,Eid-ul-Fitr Holiday,1.5
+2026-04-14,holiday,Pohela Boishakh,1.4
+2026-05-01,holiday,May Day,1.1
+2026-05-27,eid,Eid-ul-Adha,2.0
+2026-05-28,eid,Eid-ul-Adha Holiday,1.8
+2026-05-29,eid,Eid-ul-Adha Holiday,1.5
+2026-08-15,holiday,National Mourning Day,1.0
+2026-09-04,holiday,Janmashtami,1.1
+2026-10-20,puja,Durga Puja,1.7
+2026-10-21,puja,Durga Puja,1.7
+2026-10-22,puja,Durga Puja,1.5
+2026-11-27,sale,Black Friday,2.0
+2026-12-12,sale,12.12 Sale,1.8
+2026-12-16,holiday,Victory Day,1.2
+2026-12-25,holiday,Christmas Day,1.2
+2026-12-31,sale,Year-End Sale,1.6
+2026-01-01,holiday,New Year,1.1
+2026-02-14,sale,Valentine's Day,1.3
+2026-03-08,sale,International Women's Day,1.2
+2026-06-01,sale,Summer Sale,1.3
+2026-07-01,sale,Monsoon Sale,1.2
+2026-09-01,sale,Autumn Sale,1.2
+2026-11-11,sale,11.11 Sale,1.7

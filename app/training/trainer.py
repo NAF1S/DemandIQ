@@ -34,9 +34,19 @@ class EntityTraining:
     warning: str | None = None
 
 
-def _fit_and_predict(model_name: str, frame: pd.DataFrame, periods: int) -> tuple[BaseForecaster, ModelMetrics, list[ForecastResult]]:
+def _fit_and_predict(
+    model_name: str,
+    frame: pd.DataFrame,
+    periods: int,
+    future_calendar: pd.DataFrame | None = None,
+) -> tuple[BaseForecaster, ModelMetrics, list[ForecastResult]]:
     model = create_model(model_name)
     metrics = model.backtest(frame, horizon=periods)
+
+    setter = getattr(model, "set_future_calendar", None)
+    if callable(setter) and future_calendar is not None:
+        setter(future_calendar)
+
     model.fit(frame)
     predictions = model.predict(periods)
     return model, metrics, predictions
@@ -51,6 +61,7 @@ def train_entity(
     artifact_dir: str | Path | None = None,
     run_id: str | None = None,
     organization_id: int = 1,
+    future_calendar: pd.DataFrame | None = None,
 ) -> EntityTraining:
     """Train one entity using the Phase 6 selection rules."""
     if periods < 1:
@@ -66,13 +77,17 @@ def train_entity(
 
     warning: str | None = None
     try:
-        model, metrics, predictions = _fit_and_predict(model_name, frame, periods)
+        model, metrics, predictions = _fit_and_predict(
+            model_name, frame, periods, future_calendar
+        )
     except Exception as exc:  # optional dependency or model-specific failure
         if model_name == "velocity":
             raise
         warning = f"{model_name} failed ({exc}); fell back to velocity."
         model_name = "velocity"
-        model, metrics, predictions = _fit_and_predict(model_name, frame, periods)
+        model, metrics, predictions = _fit_and_predict(
+            "velocity", frame, periods, future_calendar
+        )
 
     artifact_path: str | None = None
     if artifact_dir is not None:

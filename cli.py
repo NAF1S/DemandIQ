@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     features_parser = sub.add_parser("build-features", help="Build zero-filled daily ML features")
     features_parser.add_argument("--org", type=int, default=1, help="organization id (default: 1)")
     features_parser.add_argument("--store", type=int, default=1, help="store connection id (default: 1)")
-    features_parser.add_argument("--lookback-days", type=int, default=90, help="number of days to build (default: 90)")
+    features_parser.add_argument("--lookback-days", type=int, default=365, help="number of days to build (default: 365)")
     features_parser.add_argument("--dry-run", action="store_true", help="validate and report without writing")
     features_parser.add_argument("--json", type=Path, default=None, help="write the full summary as JSON")
     features_parser.add_argument("--dsn", default=None, help="override DATABASE_URL for this run")
@@ -194,6 +194,16 @@ def main(argv: list[str] | None = None) -> int:
         help="forecast/risk age in hours before the pipeline is stale (default: 36)",
     )
     health_parser.add_argument("--json", type=Path, default=None, help="write the report as JSON")
+
+    events_parser = sub.add_parser("import-events", help="Import calendar events from a CSV")
+    events_parser.add_argument("--file", type=Path, required=True, help="CSV with event_date,event_type,event_name")
+    events_parser.add_argument("--org", type=int, default=None, help="organization id (default: global)")
+    events_parser.add_argument("--country", default="BD", help="country code (default: BD)")
+    events_parser.add_argument("--replace", action="store_true", help="replace the existing event set")
+    events_parser.add_argument("--dry-run", action="store_true", help="validate without writing")
+
+    inventory_parser = sub.add_parser("events", help="Show the imported calendar events")
+    inventory_parser.add_argument("--org", type=int, default=1, help="organization id (default: 1)")
 
     args = parser.parse_args(argv)
 
@@ -342,6 +352,45 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  PROBLEM: {problem}")
 
         return 0 if report["status"] == "ok" else 2
+
+    if args.command == "import-events":
+        from app.etl.events import import_events, read_events_csv
+
+        rows = read_events_csv(args.file)
+        print(f"Validated {len(rows)} event(s) from {args.file}")
+        for row in rows[:10]:
+            print(f"  {row['event_date']} · {row['event_type']} · {row['event_name']} · x{row['impact_factor']}")
+
+        if args.dry_run:
+            print("Dry run: nothing written.")
+            return 0
+
+        from app.training.pipeline import connect
+
+        with connect() as conn:
+            written = import_events(
+                conn,
+                organization_id=args.org,
+                rows=rows,
+                replace=args.replace,
+                country_code=args.country,
+            )
+
+        print(f"Imported {written} event(s) {'globally' if args.org is None else f'for org {args.org}'}.")
+        return 0
+
+    if args.command == "events":
+        from app.etl.events import event_inventory
+        from app.training.pipeline import connect
+
+        with connect() as conn:
+            inventory = event_inventory(conn, args.org)
+
+        print(f"Calendar events — {inventory['events']} total")
+        print(f"Range: {inventory['first']} → {inventory['last']}")
+        for kind, count in inventory["types"].items():
+            print(f"  {kind}: {count}")
+        return 0
 
     return 1
 

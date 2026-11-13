@@ -19,10 +19,19 @@ CALENDAR_FEATURES = [
     "is_weekend",
     "month",
     "day_of_month",
+    "quarter",
+    "day_of_quarter",
+    "days_to_quarter_end",
     "is_holiday",
     "is_payday",
     "is_festival_period",
+    "is_sale_event",
+    "event_impact",
+    "days_to_event",
+    "days_since_event",
 ]
+
+QUARTER_FEATURES = ["quarter", "day_of_quarter", "days_to_quarter_end", "quarter_progress"]
 
 LAG_FEATURES = ["lag_1", "lag_7", "lag_14", "lag_28"]
 
@@ -97,15 +106,31 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     out["month"] = out["ds"].dt.month
     out["day_of_month"] = out["ds"].dt.day
 
+    out["quarter"] = out["ds"].dt.quarter
+    out["day_of_quarter"] = out["ds"].dt.day_of_year - (out["ds"].dt.quarter - 1) * 91
+    out["days_to_quarter_end"] = (
+        out["ds"].dt.to_period("Q").dt.end_time.dt.normalize() - out["ds"]
+    ).dt.days
+    out["quarter_progress"] = (out["day_of_quarter"] / 91).clip(0, 1)
+
     if "is_weekend" in out.columns:
         out["is_weekend"] = out["is_weekend"].fillna(out["day_of_week"].isin([4, 5])).astype(bool)
     else:
         out["is_weekend"] = out["day_of_week"].isin([4, 5])
 
-    for column in ("is_holiday", "is_payday", "is_festival_period"):
+    for column in ("is_holiday", "is_payday", "is_festival_period", "is_sale_event"):
         if column not in out.columns:
             out[column] = False
         out[column] = out[column].fillna(False).astype(bool)
+
+    for column, default in (
+        ("event_impact", 1.0),
+        ("days_to_event", 90),
+        ("days_since_event", 90),
+    ):
+        if column not in out.columns:
+            out[column] = default
+        out[column] = pd.to_numeric(out[column], errors="coerce").fillna(default)
 
     for lag in (1, 7, 14, 28):
         out[f"lag_{lag}"] = out["net_consumed"].shift(lag)

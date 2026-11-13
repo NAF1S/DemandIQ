@@ -53,6 +53,30 @@ class LGBMForecaster(BaseForecaster):
         self._last_date: date | None = None
         self._traffic: dict[str, float] = {}
         self._stock: dict[str, float] = {}
+        self._future_calendar: dict[date, dict[str, float]] = {}
+
+    def set_future_calendar(self, frame: pd.DataFrame | None) -> None:
+        """Attach known event/quarter values for the forecast horizon.
+
+        Event dates are known in advance, unlike traffic, so a forward forecast
+        may legitimately use them. ``frame`` is indexed by ``ds`` with the
+        calendar columns.
+        """
+        self._future_calendar = {}
+        if frame is None or frame.empty or "ds" not in frame.columns:
+            return
+
+        for _, row in frame.iterrows():
+            day = pd.Timestamp(row["ds"]).date()
+            self._future_calendar[day] = {
+                "is_holiday": float(bool(row.get("is_holiday", False))),
+                "is_payday": float(bool(row.get("is_payday", False))),
+                "is_festival_period": float(bool(row.get("is_festival_period", False))),
+                "is_sale_event": float(bool(row.get("is_sale_event", False))),
+                "event_impact": float(row.get("event_impact", 1.0) or 1.0),
+                "days_to_event": float(row.get("days_to_event", 90) or 90),
+                "days_since_event": float(row.get("days_since_event", 90) or 90),
+            }
 
     def _params(self) -> dict[str, Any]:
         return {
@@ -110,9 +134,20 @@ class LGBMForecaster(BaseForecaster):
             "is_weekend": 1.0 if forecast_date.weekday() in (4, 5) else 0.0,
             "month": float(forecast_date.month),
             "day_of_month": float(forecast_date.day),
+            "quarter": float((forecast_date.month - 1) // 3 + 1),
+            "day_of_quarter": float(
+                forecast_date.timetuple().tm_yday - ((forecast_date.month - 1) // 3) * 91
+            ),
+            "days_to_quarter_end": float(
+                (pd.Timestamp(forecast_date).to_period("Q").end_time.normalize().date() - forecast_date).days
+            ),
             "is_holiday": 0.0,
             "is_payday": 0.0,
             "is_festival_period": 0.0,
+            "is_sale_event": 0.0,
+            "event_impact": 1.0,
+            "days_to_event": 90.0,
+            "days_since_event": 90.0,
             "lag_1": float(history[-1]) if history else 0.0,
             "lag_7": float(history[-7]) if len(history) >= 7 else 0.0,
             "lag_14": float(history[-14]) if len(history) >= 14 else 0.0,
@@ -131,6 +166,10 @@ class LGBMForecaster(BaseForecaster):
             **self._traffic,
             **self._stock,
         }
+
+        if forecast_date in self._future_calendar:
+            row.update(self._future_calendar[forecast_date])
+
         return row
 
     def _predict(self, periods: int, frame: pd.DataFrame) -> list[ForecastResult]:

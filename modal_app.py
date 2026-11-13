@@ -113,7 +113,7 @@ def trigger(payload: dict[str, Any]) -> dict[str, Any]:
 def build_features(
     organization_id: int = 1,
     store_id: int = 1,
-    lookback_days: int = 90,
+    lookback_days: int = 365,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Refresh the daily feature matrix through a direct Postgres connection."""
@@ -152,7 +152,7 @@ def features_and_training(
     store_id: int = 1,
     periods: int = 14,
     engine: str = "auto",
-    lookback_days: int = 90,
+    lookback_days: int = 365,
 ) -> dict[str, Any]:
     """Build features, then train, so the forecast horizon always starts today."""
     features = build_features.remote(
@@ -230,7 +230,7 @@ def daily_features() -> dict[str, Any]:
     from app.training.pipeline import connect
 
     with connect() as conn:
-        summary = run_direct_feature_pipeline(conn, organization_id=1, store_id=1, lookback_days=90)
+        summary = run_direct_feature_pipeline(conn, organization_id=1, store_id=1, lookback_days=365)
 
     print(
         f"daily features {summary['start_date']} → {summary['end_date']}: "
