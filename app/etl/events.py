@@ -34,7 +34,73 @@ INSERT INTO ml_calendar_events (
     %(organization_id)s, %(event_date)s, %(event_type)s, %(event_name)s,
     %(country_code)s, %(impact_factor)s, NOW()
 )
+ON CONFLICT DO NOTHING
 """
+
+UPSERT_EVENT = """
+INSERT INTO ml_calendar_events (
+    organization_id, event_date, event_type, event_name, country_code, impact_factor, created_at
+) VALUES (
+    %(organization_id)s, %(event_date)s, %(event_type)s, %(event_name)s,
+    %(country_code)s, %(impact_factor)s, NOW()
+)
+"""
+
+
+def write_events_csv(path: Path, events: list[dict[str, Any]]) -> int:
+    """Export events in the same shape ``read_events_csv`` consumes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=["event_date", "event_type", "event_name", "impact_factor"]
+        )
+        writer.writeheader()
+        for event in events:
+            writer.writerow(
+                {
+                    "event_date": event["event_date"].isoformat()
+                    if isinstance(event["event_date"], date)
+                    else event["event_date"],
+                    "event_type": event["event_type"],
+                    "event_name": event["event_name"],
+                    "impact_factor": event.get("impact_factor", 1.0),
+                }
+            )
+
+    return len(events)
+
+
+def sync_events(
+    conn: Connection,
+    organization_id: int | None,
+    years: list[int],
+    country: str = "BD",
+    include_sales: bool = True,
+    replace: bool = False,
+) -> dict[str, Any]:
+    """Pull public holidays and monthly sales for the years and store them."""
+    from app.etl.holiday_sync import build_calendar
+
+    events = build_calendar(years, country=country, include_sales=include_sales)
+    written = import_events(
+        conn,
+        organization_id=organization_id,
+        rows=events,
+        replace=replace,
+        country_code=country,
+    )
+
+    from collections import Counter
+
+    return {
+        "written": written,
+        "years": years,
+        "types": dict(Counter(str(event["event_type"]) for event in events)),
+        "estimated": sum(1 for event in events if event.get("estimated")),
+        "first": events[0]["event_date"].isoformat() if events else None,
+        "last": events[-1]["event_date"].isoformat() if events else None,
+    }
 
 
 def read_events_csv(path: Path) -> list[dict[str, Any]]:
@@ -95,9 +161,26 @@ def import_events(
     replace: bool = False,
     country_code: str = "BD",
 ) -> int:
-    """Insert events, optionally replacing the existing set for that scope."""
+    """Insert events, optionally replacing the existing set for that scope.
+
+    Without ``replace`` this is additive and de-duplicates on
+    (scope, date, type, name) so re-running a sync for an overlapping year is
+    safe.
+    """
     if not rows:
         return 0
+
+    payload = [
+        {
+            "organization_id": organization_id,
+            "event_date": row["event_date"],
+            "event_type": row["event_type"],
+            "event_name": row["event_name"],
+            "country_code": country_code,
+            "impact_factor": row["impact_factor"],
+        }
+        for row in rows
+    ]
 
     with conn.cursor() as cur:
         if replace:
@@ -109,23 +192,11 @@ def import_events(
                     (organization_id,),
                 )
 
-        cur.executemany(
-            INSERT_EVENT,
-            [
-                {
-                    "organization_id": organization_id,
-                    "event_date": row["event_date"],
-                    "event_type": row["event_type"],
-                    "event_name": row["event_name"],
-                    "country_code": country_code,
-                    "impact_factor": row["impact_factor"],
-                }
-                for row in rows
-            ],
-        )
+        cur.executemany(INSERT_EVENT, payload)
+        written = cur.rowcount if cur.rowcount > 0 else len(payload)
     conn.commit()
 
-    return len(rows)
+    return int(written)
 
 
 def event_inventory(conn: Connection, organization_id: int) -> dict[str, Any]:

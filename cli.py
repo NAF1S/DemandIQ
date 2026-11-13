@@ -205,6 +205,19 @@ def main(argv: list[str] | None = None) -> int:
     inventory_parser = sub.add_parser("events", help="Show the imported calendar events")
     inventory_parser.add_argument("--org", type=int, default=1, help="organization id (default: 1)")
 
+    sync_parser = sub.add_parser("sync-events", help="Pull public holidays automatically")
+    sync_parser.add_argument(
+        "--years",
+        default=None,
+        help="comma-separated years, e.g. 2027,2028 (default: current and next year)",
+    )
+    sync_parser.add_argument("--org", type=int, default=None, help="organization id (default: global)")
+    sync_parser.add_argument("--country", default="BD", help="country code (default: BD)")
+    sync_parser.add_argument("--no-sales", action="store_true", help="skip the built-in sale periods")
+    sync_parser.add_argument("--replace", action="store_true", help="replace the existing event set")
+    sync_parser.add_argument("--export", type=Path, default=None, help="also write the result to a CSV")
+    sync_parser.add_argument("--dry-run", action="store_true", help="fetch and report without writing")
+
     args = parser.parse_args(argv)
 
     if args.dsn:
@@ -390,6 +403,66 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Range: {inventory['first']} → {inventory['last']}")
         for kind, count in inventory["types"].items():
             print(f"  {kind}: {count}")
+        return 0
+
+    if args.command == "sync-events":
+        from datetime import date as _date
+
+        from app.etl.events import sync_events, write_events_csv
+        from app.etl.holiday_sync import build_calendar
+
+        if args.years:
+            years = sorted({int(value) for value in args.years.split(",") if value.strip()})
+        else:
+            years = [_date.today().year, _date.today().year + 1]
+
+        print(f"Fetching holidays for {', '.join(str(y) for y in years)} ({args.country}) …")
+
+        if args.dry_run:
+            events = build_calendar(
+                years, country=args.country, include_sales=not args.no_sales
+            )
+            print(f"Fetched {len(events)} event(s); nothing written.")
+            for event in events[:15]:
+                print(f"  {event['event_date']} · {event['event_type']} · {event['event_name']}")
+            if len(events) > 15:
+                print(f"  … and {len(events) - 15} more")
+            if args.export:
+                write_events_csv(args.export, events)
+                print(f"CSV written: {args.export}")
+            return 0
+
+        from app.training.pipeline import connect
+
+        with connect() as conn:
+            summary = sync_events(
+                conn,
+                organization_id=args.org,
+                years=years,
+                country=args.country,
+                include_sales=not args.no_sales,
+                replace=args.replace,
+            )
+
+            if args.export:
+                from app.etl.events import event_inventory
+
+                inventory = event_inventory(conn, args.org or 1)
+                write_events_csv(args.export, build_calendar(
+                    years, country=args.country, include_sales=not args.no_sales
+                ))
+                print(f"CSV written: {args.export}")
+                print(f"Current calendar has {inventory['events']} event(s) in scope")
+
+        print(
+            f"Synced {summary['written']} event(s) "
+            f"{'globally' if args.org is None else f'for org {args.org}'}"
+        )
+        print(f"Range: {summary['first']} → {summary['last']}")
+        print(f"Types: {summary['types']}")
+        print(f"Estimated (moon-sighting) dates: {summary['estimated']}")
+        if args.export:
+            print(f"Current calendar has {inventory['events']} event(s) in scope")
         return 0
 
     return 1

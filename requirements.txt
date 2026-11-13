@@ -18,3 +18,6 @@ joblib>=1.4
 
 # Phase 7 training: direct Supabase writes from Modal / the local pipeline
 psycopg[binary]>=3.2
+
+# Phase 12: automatic public-holiday sync for calendar features
+holidays>=0.60

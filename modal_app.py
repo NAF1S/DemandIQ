@@ -30,6 +30,7 @@ image = (
         "lightgbm>=4.5",
         "joblib>=1.4",
         "psycopg[binary]>=3.2",
+        "holidays>=0.60",
     )
     .add_local_python_source("app")
 )
@@ -181,6 +182,85 @@ def features_and_training(
             "models": summary["models"],
         },
     }
+
+
+@app.function(
+    image=image,
+    secrets=secrets,
+    volumes={"/models": models_volume},
+    schedule=modal.Cron("0 3 1 1 *"),
+    timeout=600,
+    memory=1024,
+)
+def annual_calendar_sync() -> dict[str, Any]:
+    """Refresh the next two years of events once a year, on 1 January.
+
+    Eid and Puja dates are lunar and are published as estimates, so the sync
+    runs every year rather than being seeded once. Re-importing is idempotent.
+    """
+    from datetime import date as _date
+
+    from app.etl.events import sync_events
+    from app.training.pipeline import connect
+
+    this_year = _date.today().year
+
+    with connect() as conn:
+        summary = sync_events(
+            conn,
+            organization_id=None,
+            years=[this_year, this_year + 1],
+            country="BD",
+            include_sales=True,
+            replace=False,
+        )
+
+    print(
+        f"calendar sync {this_year}-{this_year + 1}: {summary['written']} rows, "
+        f"{summary['estimated']} estimated, types={summary['types']}",
+        flush=True,
+    )
+
+    return summary
+
+
+@app.function(
+    image=image,
+    secrets=secrets,
+    volumes={"/models": models_volume},
+    timeout=300,
+    memory=1024,
+)
+def sync_calendar(
+    years: str | None = None,
+    country: str = "BD",
+    include_sales: bool = True,
+    replace: bool = False,
+) -> dict[str, Any]:
+    """On-demand calendar sync; defaults to the current and next year."""
+    from datetime import date as _date
+
+    from app.etl.events import sync_events
+    from app.training.pipeline import connect
+
+    if years:
+        parsed = sorted({int(value) for value in years.split(",") if value.strip()})
+    else:
+        today = _date.today()
+        parsed = [today.year, today.year + 1]
+
+    with connect() as conn:
+        summary = sync_events(
+            conn,
+            organization_id=None,
+            years=parsed,
+            country=country,
+            include_sales=include_sales,
+            replace=replace,
+        )
+
+    print(f"calendar sync {parsed}: {summary['written']} rows written", flush=True)
+    return summary
 
 
 @app.function(
